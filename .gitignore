@@ -1,0 +1,38 @@
+.DS_Store
+data/my_perms.sql
+
+/target
+/logs
+*.log
+
+# Keep local environment and MCP settings private; publish templates only.
+.env*
+!.env.example
+.mcp.json*
+!.mcp.json.example
+
+# Local credentials and private keys.
+.aws/
+.azure/
+.codex/
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# Rebuild demo data from data/seed.sql instead of publishing database contents.
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+
+# Keep local screenshots and recordings out of the public example.
+/images/
+/media/
+*.mov
+*.mp4
+*.webm

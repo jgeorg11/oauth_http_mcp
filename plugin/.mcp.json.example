@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "oauth-http-mcp": {
+      "type": "http",
+      "url": "http://localhost:8001/mcp",
+      "scopes": [
+        "http://localhost:8001/mcp/access_as_user",
+        "offline_access"
+      ],
+      "oauth": {
+        "clientId": "<YOUR_CLIENT_APPLICATION_ID>",
+        "callbackUrl": "http://localhost:1456/callback/nUXMQeJafTLA",
+        "callbackPort": 1456
+      }
+    }
+  }
+}

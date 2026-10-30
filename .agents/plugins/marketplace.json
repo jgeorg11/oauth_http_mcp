@@ -1,0 +1,20 @@
+{
+  "name": "oauth-local",
+  "interface": {
+    "displayName": "OAuth Local Plugins"
+  },
+  "plugins": [
+    {
+      "name": "oauth-http-mcp",
+      "source": {
+        "source": "local",
+        "path": "./plugin"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

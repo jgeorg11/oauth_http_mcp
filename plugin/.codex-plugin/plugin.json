@@ -1,0 +1,14 @@
+{
+  "name": "oauth-http-mcp",
+  "version": "0.1.4",
+  "description": "List, search, and inspect projects through the Rust Streamable HTTP MCP query demo.",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "OAuth HTTP MCP",
+    "shortDescription": "Query SQLite projects",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Show me the projects"
+  }
+}
