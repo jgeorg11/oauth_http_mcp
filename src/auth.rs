@@ -7,15 +7,17 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jwk::JwkSet};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jwk::Jwk};
+use jwks_cache::{IdentityProviderRegistration, Registry};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::config::AuthConfig;
 
+#[derive(Clone)]
 pub struct AuthState {
     pub(crate) config: AuthConfig,
-    keys: JwkSet,
+    registry: Registry,
     validation: Validation,
 }
 
@@ -53,18 +55,26 @@ impl AuthState {
             return Err("Entra discovery returned an unexpected issuer".into());
         }
 
-        // Demo: load keys once. Restart to refresh them after a signing-key rotation.
-        let keys = client
-            .get(discovery.jwks_uri)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
-        Ok(Self::from_keys(config, keys))
+        let registry = Registry::new();
+        let registration = Self::key_registration(&config, &discovery.jwks_uri)?;
+        registry.register(registration).await?;
+        registry.resolve(&config.tenant_id, "entra", None).await?;
+        Ok(Self::from_registry(config, registry))
     }
 
-    fn from_keys(config: AuthConfig, keys: JwkSet) -> Self {
+    fn key_registration(
+        config: &AuthConfig,
+        jwks_uri: &str,
+    ) -> Result<IdentityProviderRegistration, jwks_cache::Error> {
+        let mut registration =
+            IdentityProviderRegistration::new(&config.tenant_id, "entra", jwks_uri)?;
+        registration.max_ttl = Duration::from_secs(60 * 60);
+        // Stay below the default 30-second minimum TTL, including jitter.
+        registration.refresh_early = Duration::from_secs(10);
+        Ok(registration)
+    }
+
+    fn from_registry(config: AuthConfig, registry: Registry) -> Self {
         let mut validation = Validation::new(Algorithm::RS256);
         validation.set_audience(&[&config.audience]);
         validation.set_issuer(&[config.issuer()]);
@@ -72,26 +82,56 @@ impl AuthState {
         validation.validate_nbf = true;
         Self {
             config,
-            keys,
+            registry,
             validation,
         }
     }
 
-    fn validate(&self, token: &str) -> Result<(), StatusCode> {
-        let invalid = StatusCode::UNAUTHORIZED;
-        let header = decode_header(token).map_err(|_| invalid)?;
-        if header.alg != Algorithm::RS256 {
-            return Err(invalid);
+    pub async fn refresh_keys_periodically(self: Arc<Self>) {
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            // resolve starts a background refresh only when the cache is due.
+            // Polling also refreshes keys while no protected requests arrive.
+            if let Err(error) = self
+                .registry
+                .resolve(&self.config.tenant_id, "entra", None)
+                .await
+            {
+                tracing::warn!(%error, "Periodic JWKS cache check failed");
+            }
         }
-        let kid = header.kid.ok_or(invalid)?;
-        let jwk = self.keys.find(&kid).ok_or(invalid)?;
-        let key = DecodingKey::from_jwk(jwk).map_err(|_| invalid)?;
-        let claims = decode::<Claims>(token, &key, &self.validation)
-            .map_err(|_| invalid)?
-            .claims;
+    }
 
+    async fn verify_token_with_cache(&self, token: &str) -> Result<Claims, StatusCode> {
+        let header = decode_header(token).map_err(|_| StatusCode::UNAUTHORIZED)?;
+        if header.alg != Algorithm::RS256 {
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+        let kid = header.kid.ok_or(StatusCode::UNAUTHORIZED)?;
+        let keys = self
+            .registry
+            .resolve(&self.config.tenant_id, "entra", Some(&kid))
+            .await
+            .map_err(|_| StatusCode::UNAUTHORIZED)?;
+        let jwk = keys.find(&kid).ok_or(StatusCode::UNAUTHORIZED)?;
+        // jwks-cache 0.2 uses jsonwebtoken 10; this application uses version 11.
+        // Convert the selected public JWK between their distinct Rust types.
+        let jwk: Jwk = serde_json::from_value(
+            serde_json::to_value(jwk).map_err(|_| StatusCode::UNAUTHORIZED)?,
+        )
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+        let key = DecodingKey::from_jwk(&jwk).map_err(|_| StatusCode::UNAUTHORIZED)?;
+        Ok(decode::<Claims>(token, &key, &self.validation)
+            .map_err(|_| StatusCode::UNAUTHORIZED)?
+            .claims)
+    }
+
+    async fn validate(&self, token: &str) -> Result<(), StatusCode> {
+        let claims = self.verify_token_with_cache(token).await?;
         if claims.tid != self.config.tenant_id || claims.ver != "2.0" {
-            return Err(invalid);
+            return Err(StatusCode::UNAUTHORIZED);
         }
         if !claims
             .scp
@@ -132,7 +172,7 @@ pub async fn require_auth(
     let Some(token) = token else {
         return auth.reject(StatusCode::UNAUTHORIZED, None);
     };
-    match auth.validate(token) {
+    match auth.validate(token).await {
         Ok(()) => next.run(request).await,
         Err(StatusCode::FORBIDDEN) => {
             auth.reject(StatusCode::FORBIDDEN, Some("insufficient_scope"))

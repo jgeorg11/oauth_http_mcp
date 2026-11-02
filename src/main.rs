@@ -32,7 +32,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .max_connections(data_config.max_connections)
         .connect(&data_config.database_url)
         .await?;
-    let app = router(pool, auth);
+    let app = router(pool, auth.clone());
 
     let listener = TcpListener::bind((mcp_config.host.as_str(), mcp_config.port)).await?;
     tracing::info!(
@@ -40,12 +40,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         listener.local_addr()?
     );
 
-    axum::serve(listener, app)
+    let key_refresh = tokio::spawn(auth.refresh_keys_periodically());
+    let result = axum::serve(listener, app)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
             tracing::info!("Shutting down MCP server");
         })
-        .await?;
+        .await;
+    key_refresh.abort();
+    result?;
 
     Ok(())
 }
