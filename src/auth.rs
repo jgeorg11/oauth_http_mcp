@@ -11,13 +11,19 @@ use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jw
 use jwks_cache::{IdentityProviderRegistration, Registry};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tokio::{
+    sync::{Mutex, RwLock},
+    time::Instant,
+};
 
 use crate::config::AuthConfig;
 
 #[derive(Clone)]
 pub struct AuthState {
     pub(crate) config: AuthConfig,
-    registry: Registry,
+    registry: Arc<RwLock<Registry>>,
+    registration: IdentityProviderRegistration,
+    unknown_key_refresh: Arc<Mutex<Option<Instant>>>,
     validation: Validation,
 }
 
@@ -57,9 +63,9 @@ impl AuthState {
 
         let registry = Registry::new();
         let registration = Self::key_registration(&config, &discovery.jwks_uri)?;
-        registry.register(registration).await?;
+        registry.register(registration.clone()).await?;
         registry.resolve(&config.tenant_id, "entra", None).await?;
-        Ok(Self::from_registry(config, registry))
+        Ok(Self::from_registry(config, registry, registration))
     }
 
     fn key_registration(
@@ -74,7 +80,11 @@ impl AuthState {
         Ok(registration)
     }
 
-    fn from_registry(config: AuthConfig, registry: Registry) -> Self {
+    fn from_registry(
+        config: AuthConfig,
+        registry: Registry,
+        registration: IdentityProviderRegistration,
+    ) -> Self {
         let mut validation = Validation::new(Algorithm::RS256);
         validation.set_audience(&[&config.audience]);
         validation.set_issuer(&[config.issuer()]);
@@ -82,7 +92,9 @@ impl AuthState {
         validation.validate_nbf = true;
         Self {
             config,
-            registry,
+            registry: Arc::new(RwLock::new(registry)),
+            registration,
+            unknown_key_refresh: Arc::new(Mutex::new(None)),
             validation,
         }
     }
@@ -94,8 +106,8 @@ impl AuthState {
             interval.tick().await;
             // resolve starts a background refresh only when the cache is due.
             // Polling also refreshes keys while no protected requests arrive.
-            if let Err(error) = self
-                .registry
+            let registry = self.registry.read().await.clone();
+            if let Err(error) = registry
                 .resolve(&self.config.tenant_id, "entra", None)
                 .await
             {
@@ -104,17 +116,60 @@ impl AuthState {
         }
     }
 
+    async fn refresh_keys_for_unknown_kid(&self, kid: &str) -> Result<(), jwks_cache::Error> {
+        // One lock and timestamp per provider, shared even by AuthState clones.
+        // Waiters recheck the cache after the in-flight refresh completes.
+        let mut last_attempt = self.unknown_key_refresh.lock().await;
+        let registry = self.registry.read().await.clone();
+        let keys = registry
+            .resolve(&self.config.tenant_id, "entra", Some(kid))
+            .await?;
+        if keys.find(kid).is_some() {
+            return Ok(());
+        }
+        if last_attempt.is_some_and(|last| last.elapsed() < Duration::from_mins(5)) {
+            return Ok(());
+        }
+        // Failed or cancelled refreshes also consume the cooldown.
+        *last_attempt = Some(Instant::now());
+
+        // jwks-cache 0.2's refresh() only refreshes entries that are already due.
+        // Load a replacement first so a failed fetch preserves the active cache.
+        let replacement = Registry::builder()
+            .require_https(self.registration.require_https)
+            .build();
+        replacement.register(self.registration.clone()).await?;
+        replacement
+            .resolve(&self.config.tenant_id, "entra", None)
+            .await?;
+        *self.registry.write().await = replacement;
+        Ok(())
+    }
+
     async fn verify_token_with_cache(&self, token: &str) -> Result<Claims, StatusCode> {
         let header = decode_header(token).map_err(|_| StatusCode::UNAUTHORIZED)?;
         if header.alg != Algorithm::RS256 {
             return Err(StatusCode::UNAUTHORIZED);
         }
         let kid = header.kid.ok_or(StatusCode::UNAUTHORIZED)?;
-        let keys = self
-            .registry
+        let registry = self.registry.read().await.clone();
+        let mut keys = registry
             .resolve(&self.config.tenant_id, "entra", Some(&kid))
             .await
             .map_err(|_| StatusCode::UNAUTHORIZED)?;
+        if keys.find(&kid).is_none() {
+            self.refresh_keys_for_unknown_kid(&kid)
+                .await
+                .map_err(|error| {
+                    tracing::warn!(%error, "Unknown signing key JWKS refresh failed");
+                    StatusCode::UNAUTHORIZED
+                })?;
+            let registry = self.registry.read().await.clone();
+            keys = registry
+                .resolve(&self.config.tenant_id, "entra", Some(&kid))
+                .await
+                .map_err(|_| StatusCode::UNAUTHORIZED)?;
+        }
         let jwk = keys.find(&kid).ok_or(StatusCode::UNAUTHORIZED)?;
         // jwks-cache 0.2 uses jsonwebtoken 10; this application uses version 11.
         // Convert the selected public JWK between their distinct Rust types.
