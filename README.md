@@ -3,7 +3,7 @@
 > Replace `YOUR_GITHUB_OWNER/YOUR_REPOSITORY` in repository links and clone
 > commands with the location of your public GitHub repository.
 
-In Part 0, you built a Rust MCP server protected by Microsoft Entra ID,
+[In Part 0](https://github.com/YOUR_GITHUB_OWNER/YOUR_REPOSITORY), you built a Rust MCP server protected by Microsoft Entra ID,
 connected Codex over Streamable HTTP, and queried a small SQLite project
 database after signing in. That baseline loads Entra's public signing keys
 once at startup. When Entra rotates its signing keys, tokens signed with a
