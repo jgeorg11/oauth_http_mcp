@@ -1,4 +1,4 @@
-# Build an OAuth 2.1-protected HTTP MCP server
+# Part 0: Build an OAuth 2.1-protected HTTP MCP server
 
 > Replace `YOUR_GITHUB_OWNER/YOUR_REPOSITORY` in repository links and clone
 > commands with the location of your public GitHub repository.
