@@ -36,9 +36,16 @@ struct Discovery {
 #[derive(Deserialize)]
 struct Claims {
     tid: String,
+    oid: String,
     ver: String,
     #[serde(default)]
     scp: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct Principal {
+    pub tenant_id: String,
+    pub object_id: String,
 }
 
 impl AuthState {
@@ -183,9 +190,13 @@ impl AuthState {
             .claims)
     }
 
-    async fn validate(&self, token: &str) -> Result<(), StatusCode> {
+    async fn validate(&self, token: &str) -> Result<Principal, StatusCode> {
         let claims = self.verify_token_with_cache(token).await?;
-        if claims.tid != self.config.tenant_id || claims.ver != "2.0" {
+
+        if claims.tid != self.config.tenant_id
+            || claims.ver != "2.0"
+            || claims.oid.trim().is_empty()
+        {
             return Err(StatusCode::UNAUTHORIZED);
         }
         if !claims
@@ -195,7 +206,10 @@ impl AuthState {
         {
             return Err(StatusCode::FORBIDDEN);
         }
-        Ok(())
+        Ok(Principal {
+            tenant_id: claims.tid,
+            object_id: claims.oid,
+        })
     }
 
     fn reject(&self, status: StatusCode, error: Option<&str>) -> Response {
@@ -213,7 +227,7 @@ impl AuthState {
 
 pub async fn require_auth(
     State(auth): State<Arc<AuthState>>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     let token = request
@@ -228,7 +242,10 @@ pub async fn require_auth(
         return auth.reject(StatusCode::UNAUTHORIZED, None);
     };
     match auth.validate(token).await {
-        Ok(()) => next.run(request).await,
+        Ok(principal) => {
+            request.extensions_mut().insert(principal);
+            next.run(request).await
+        }
         Err(StatusCode::FORBIDDEN) => {
             auth.reject(StatusCode::FORBIDDEN, Some("insufficient_scope"))
         }

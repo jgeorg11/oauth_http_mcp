@@ -1,14 +1,22 @@
 # OAuth HTTP MCP local plugin
 
 This source package connects Codex to the repository's Rust MCP server at
-`http://localhost:8001/mcp` using Streamable HTTP. Its `query-projects` skill
-supports three read-only SQLite tools:
+`http://localhost:8001/mcp` using Streamable HTTP. This is an MCP-only plugin:
+Codex discovers capabilities from the server's tool descriptions and schemas.
+No skill is required. The server defines these tools; each user sees only the
+tools allowed by their database role:
 
 | Tool | Arguments | Result |
 | --- | --- | --- |
 | `get_projects` | `{}` | All projects ordered by ID |
 | `get_project_by_id` | `{ "project_id": 1 }` | One project, or a not-found tool error |
 | `get_project_by_query` | `{ "query": "AI" }` | Projects with matching names |
+| `create_project` | `name`, `owner`, `status`, `budget`, `risk_score` | New project with an assigned ID and timestamp |
+| `update_project` | `project_id` and any fields to change | Updated project; omitted or null fields are preserved |
+| `delete_project` | `{ "project_id": 6 }` | `{ "deleted": true }`, or a not-found tool error |
+
+List and search results use `{ "projects": [...] }`. Lookup, create, and update
+results use `{ "project": {...} }`. Each tool advertises its output schema.
 
 Search uses SQLite `LIKE` with a substring pattern; `%` and `_` act as
 wildcards. Project records contain `id`, `name`, `owner`, `status`, `budget`,
@@ -71,6 +79,7 @@ the server:
 ```bash
 mkdir -p data
 sqlite3 data/demo.db < data/seed.sql
+sqlite3 data/demo.db < data/authorization.sql
 cargo check --locked
 cargo run --locked
 ```
@@ -78,6 +87,12 @@ cargo run --locked
 The seed command resets matching IDs to the seed values; skip it if you need
 to preserve an existing database. The database file is ignored by Git and is
 not distributed with the source.
+
+Assign your verified Entra tenant ID and user object ID a role in `user_roles`,
+as described in the repository README. The `worker` role has all six tools;
+the `reporter` role has the three read tools. The placeholder assignments in
+`data/authorization.sql` do not grant access to a real user. Tool permissions
+are checked on discovery and again on every call.
 
 Leave the server running while connecting Codex. Startup requires outbound
 HTTPS access to Microsoft Entra for discovery and public signing keys.
@@ -115,21 +130,48 @@ Select **OAuth HTTP MCP** and ask:
 Show me the projects.
 Get project 1.
 Find projects with AI in the name.
+Create a project named MCP smoke test, owned by Test User, with status Planning, budget 1000, and risk score 2. Show its ID.
+For that new project, change the budget to 1200 and leave everything else unchanged.
+Get that project by its ID and verify the change.
+Delete the MCP smoke test project using its returned ID.
 ```
 
-A loaded skill alone does not verify the MCP connection. Confirm a successful
-tool result and a matching `MCP tool completed` log entry in the server
+Confirm a successful tool result and a matching `MCP tool completed` log entry in the server
 terminal. The entry includes the tool name and result count. The current
-server has no `/health` endpoint.
+server has no `/health` endpoint. Run write prompts only as a user with the
+`worker` role and use the newly created test project's ID.
+
+## Reload after source changes
+
+Stop the running server, then rebuild and restart it:
+
+```bash
+cargo test --locked
+cargo run --locked
+```
+
+After changing this plugin package, install its updated source with:
+
+```bash
+codex plugin add oauth-http-mcp@oauth-local
+```
+
+Version `0.1.5` removes the old query skill. Restart the desktop app and start
+a new conversation so the previous skill instructions and tool definitions
+are no longer in context. Verify the installed version with `codex plugin list
+--json`, then use the prompts above. If only read tools appear, check the
+signed-in user's database role and refresh the MCP connection.
+
+Future tool additions belong in the server. Restart the server and refresh
+tool discovery; update this package only when its metadata or connection
+configuration changes.
 
 ## Package contents and deployment
 
-- `.codex-plugin/plugin.json` identifies the plugin and declares its skills
-  and MCP configuration.
+- `.codex-plugin/plugin.json` identifies the plugin and declares its MCP configuration.
 - `.mcp.json.example` is the published connection template. Copy it to
   `.mcp.json` and fill in your client ID before installation. OAuth endpoints
   are discovered through the server's public metadata.
-- `skills/query-projects/SKILL.md` describes tool selection and result handling.
 
 This package uses the supported Codex compatibility manifest and `type: "http"`
 MCP configuration. The portable Agent Plugins format has a different schema;
@@ -147,6 +189,5 @@ For remote hosting, use HTTPS and update these values together. Forward both
 `/mcp` and `/.well-known/oauth-protected-resource/mcp` to the server. The
 server checks Entra access tokens before running queries; missing or invalid
 credentials return `401`, and a valid token without the required scope returns
-`403`. Signing keys load once at startup, so production deployment requires
-additional key-refresh handling and the other controls described in the
-repository README.
+`403`. The server periodically refreshes signing keys. See the repository
+README for server setup and tool-level permissions.

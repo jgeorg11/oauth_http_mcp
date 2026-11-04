@@ -1,4 +1,5 @@
 mod auth;
+mod authz;
 mod config;
 mod handlers;
 mod mcp;
