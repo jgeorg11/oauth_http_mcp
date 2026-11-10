@@ -68,6 +68,134 @@ pub struct DeleteProjectResult {
     pub deleted: bool,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct AssessProjects {
+    /// Caller-generated idempotency key: 1–64 ASCII letters,
+    /// digits, hyphens, or underscores.
+    pub run_id: String,
+
+    /// Between 1 and 20 distinct positive project IDs.
+    /// Keep this full ordered list identical across calls for the same run.
+    pub project_ids: Vec<i64>,
+
+    /// For live chat updates, select one ID from project_ids per call. Report
+    /// its returned outcome, then call the next ID with the same run_id and
+    /// full project_ids. Omit or pass null to process the entire batch.
+    pub project_id: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ReadAssessmentRun {
+    /// The run ID previously supplied to assess_projects.
+    pub run_id: String,
+}
+
+fn assessment_error(message: impl Into<String>) -> CallToolResult {
+    CallToolResult::error(vec![ContentBlock::text(message)])
+}
+
+fn assessment_owner(
+    context: &rmcp::service::RequestContext<rmcp::RoleServer>,
+) -> Result<String, CallToolResult> {
+    let principal = crate::mcp::principal_from_context(context)
+        .map_err(|_| assessment_error("Authenticated identity is missing"))?;
+
+    // Structured encoding avoids ambiguous concatenated identity keys.
+    serde_json::to_string(&(principal.tenant_id, principal.object_id))
+        .map_err(|_| assessment_error("Unable to identify run owner"))
+}
+
+async fn assessment_progress(
+    context: &rmcp::service::RequestContext<rmcp::RoleServer>,
+    done: f64,
+    total: usize,
+    message: String,
+    chunk: Option<serde_json::Value>,
+) -> Result<(), CallToolResult> {
+    use rmcp::model::{NotificationMetaObject, ProgressNotificationParam};
+
+    let Some(token) = context.meta.get_progress_token() else {
+        return Ok(());
+    };
+
+    let mut notification = ProgressNotificationParam::new(token, done)
+        .with_total(total as f64)
+        .with_message(message);
+
+    let supports_chunks = context.client_capabilities().is_some_and(|caps| {
+        caps.extensions
+            .is_some_and(|extensions| extensions.contains_key(crate::assessments::CHUNKS))
+    });
+
+    if supports_chunks && let Some(chunk) = chunk {
+        let mut meta = NotificationMetaObject::new();
+        meta.insert(crate::assessments::CHUNKS.into(), chunk);
+        notification.meta = Some(meta);
+    }
+
+    tracing::debug!(progress = done, total, "Sending assessment progress");
+    context
+        .peer
+        .notify_progress(notification)
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, "Assessment progress delivery failed");
+            assessment_error(
+                "Unable to deliver progress; use \
+                 read_assessment_run to recover saved results",
+            )
+        })
+}
+
+async fn assess_with_progress(
+    analyst: &crate::assessments::Analyst,
+    input: &crate::assessments::Evidence,
+    args: &AssessProjects,
+    index: usize,
+    context: &rmcp::service::RequestContext<rmcp::RoleServer>,
+) -> Result<Result<crate::assessments::Assessment, String>, CallToolResult> {
+    // A bounded channel propagates backpressure. Dropping this future (on
+    // cancellation or notification failure) also drops the HTTP inference.
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+    let inference = analyst.assess(&args.run_id, input, sender);
+    tokio::pin!(inference);
+    let mut draft = String::new();
+    let mut last_update: Option<tokio::time::Instant> = None;
+
+    loop {
+        tokio::select! {
+            biased;
+            Some(delta) = receiver.recv() => {
+                draft.push_str(&delta);
+                if last_update.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(100)) {
+                    continue;
+                }
+                last_update = Some(tokio::time::Instant::now());
+                // Generation has no known total token count. This increasing
+                // fraction approaches the next unit without claiming it is done.
+                let fraction = draft.len() as f64 / (draft.len() as f64 + 4096.0);
+                let progress_index = if args.project_id.is_some() { 0 } else { index };
+                let total = if args.project_id.is_some() { 1 } else { args.project_ids.len() };
+                assessment_progress(
+                    context,
+                    progress_index as f64 + fraction,
+                    total,
+                    format!("Project {} ({}), draft assessment:\n{}",
+                        input.project.id, input.project.name, draft),
+                    Some(serde_json::json!({
+                        "runId": args.run_id,
+                        "sequence": index + 1,
+                        "projectId": input.project.id,
+                        "status": "draft",
+                        "text": draft,
+                    })),
+                ).await?;
+            }
+            result = &mut inference => return Ok(result),
+        }
+    }
+}
+
 #[tool_router(vis = "pub(crate)")]
 impl McpServer {
     #[tool(
@@ -266,6 +394,252 @@ impl McpServer {
             Err(error) => Err(query_error("delete_project", error)),
         }
     }
+
+    #[tool(
+        title = "Assess project health",
+        description = "Assess project spending and overdue milestones \
+        using one LLM request per project. For live chat updates, call sequentially \
+        with project_id set to each selected ID and the same run_id and full ordered \
+        project_ids. Each call returns after that project is saved; report its outcome \
+        before calling the next ID. Keep waiting if a call yields or is still running; \
+        do not end the turn early. Omitting project_id runs the full batch with one \
+        final tool result. Reuse run_id and identical \
+        inputs to recover completed assessments and retry unfinished \
+        or failed units. Streams model drafts and saved assessment summaries \
+        in standard MCP progress messages when the host supplies a progress \
+        token. Drafts are provisional until validated and saved. Clients declaring \
+        mcp.streaming/project-assessments-v1 also receive structured chunks. \
+        Use a new run_id for fresh generation; cached results return immediately.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = true
+        )
+    )]
+    pub async fn assess_projects(
+        &self,
+        Parameters(args): Parameters<AssessProjects>,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<Json<crate::assessments::RunResult>, CallToolResult> {
+        use crate::assessments;
+
+        let owner = assessment_owner(&context)?;
+
+        let valid_run_id = !args.run_id.is_empty()
+            && args.run_id.len() <= 64
+            && args
+                .run_id
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_');
+
+        let distinct_ids = args
+            .project_ids
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+
+        if !valid_run_id
+            || !(1..=20).contains(&args.project_ids.len())
+            || args.project_ids.iter().any(|id| *id <= 0)
+            || distinct_ids != args.project_ids.len()
+        {
+            return Err(assessment_error(
+                "Provide a valid run_id and \
+             1–20 distinct positive project IDs",
+            ));
+        }
+
+        if args
+            .project_id
+            .is_some_and(|id| !args.project_ids.contains(&id))
+        {
+            return Err(assessment_error("project_id must be one of project_ids"));
+        }
+
+        let analyst = self
+            .analyst
+            .as_ref()
+            .ok_or_else(|| assessment_error("The analyst endpoint is not configured"))?;
+
+        let _permit = analyst
+            .gate
+            .try_acquire()
+            .map_err(|_| assessment_error("An assessment run is already active; retry later"))?;
+
+        tracing::info!(
+            tool = "assess_projects",
+            run_id = %args.run_id,
+            project_count = args.project_ids.len(),
+            selected_project_id = ?args.project_id,
+            progress_requested = context.meta.get_progress_token().is_some(),
+            "Assessment run started"
+        );
+
+        let work = async {
+            let total = if args.project_id.is_some() {
+                1
+            } else {
+                args.project_ids.len()
+            };
+            assessment_progress(
+                &context,
+                0.0,
+                total,
+                args.project_id.map_or_else(
+                    || {
+                        format!(
+                            "Starting assessments for {} projects",
+                            args.project_ids.len()
+                        )
+                    },
+                    |id| format!("Starting assessment for project {id}"),
+                ),
+                None,
+            )
+            .await?;
+
+            let inputs = analyst
+                .snapshot(&self.pool, &owner, &args.run_id, &args.project_ids)
+                .await
+                .map_err(assessment_error)?;
+
+            for (index, input) in inputs.iter().enumerate() {
+                if args.project_id.is_some_and(|id| id != input.project.id) {
+                    continue;
+                }
+                let saved = assessments::cached(&self.pool, &owner, &args.run_id, input.project.id)
+                    .await
+                    .map_err(assessment_error)?;
+                let reused = saved.is_some();
+
+                let outcome = if let Some(saved) = saved {
+                    Ok(saved)
+                } else {
+                    // Real asynchronous HTTP inference.
+                    let outcome =
+                        assess_with_progress(analyst, input, &args, index, &context).await?;
+
+                    // Commit before trying to deliver the chunk.
+                    assessments::save(&self.pool, &owner, &args.run_id, input.project.id, &outcome)
+                        .await
+                        .map_err(assessment_error)?;
+
+                    outcome
+                };
+
+                tracing::info!(
+                    run_id = %args.run_id,
+                    project_id = input.project.id,
+                    cached = reused,
+                    succeeded = outcome.is_ok(),
+                    "Assessment unit completed"
+                );
+
+                let chunk = match &outcome {
+                    Ok(value) => serde_json::json!({
+                        "runId": args.run_id,
+                        "sequence": index + 1,
+                        "status": "completed",
+                        "result": value,
+                    }),
+                    Err(error) => serde_json::json!({
+                        "runId": args.run_id,
+                        "sequence": index + 1,
+                        "projectId": input.project.id,
+                        "status": "failed",
+                        "error": error,
+                    }),
+                };
+
+                let message = match &outcome {
+                    Ok(value) => format!(
+                        "Completed project {} ({}) [{}/{}]: {}\nActions: {}",
+                        input.project.id,
+                        input.project.name,
+                        index + 1,
+                        inputs.len(),
+                        value.narrative.summary,
+                        value.narrative.actions.join("; "),
+                    ),
+                    Err(error) => format!(
+                        "Failed project {} ({}) [{}/{}]: {}",
+                        input.project.id,
+                        input.project.name,
+                        index + 1,
+                        inputs.len(),
+                        error,
+                    ),
+                };
+                assessment_progress(
+                    &context,
+                    if args.project_id.is_some() {
+                        1.0
+                    } else {
+                        (index + 1) as f64
+                    },
+                    total,
+                    message,
+                    Some(chunk),
+                )
+                .await?;
+            }
+
+            let result = assessments::read(&self.pool, &owner, &args.run_id)
+                .await
+                .map_err(assessment_error)?;
+            tracing::info!(
+                tool = "assess_projects",
+                run_id = %args.run_id,
+                selected_project_id = ?args.project_id,
+                result_count = result.completed.len(),
+                failed_count = result.failed.len(),
+                pending_count = result.pending_project_ids.len(),
+                "MCP tool completed"
+            );
+            Ok(Json(result))
+        };
+
+        tokio::select! {
+            biased;
+
+            _ = context.ct.cancelled() => {
+                Err(assessment_error(
+                    "Request cancelled; completed units remain saved",
+                ))
+            }
+
+            result = tokio::time::timeout(
+                std::time::Duration::from_secs(180),
+                work,
+            ) => {
+                result.map_err(|_| {
+                    assessment_error(
+                        "Run deadline exceeded; read or retry \
+                         the same run_id",
+                    )
+                })?
+            }
+        }
+    }
+
+    #[tool(
+        title = "Read assessment run",
+        description = "Read your saved completed, failed, and pending \
+        project assessments after a run or connection ends.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub async fn read_assessment_run(
+        &self,
+        Parameters(args): Parameters<ReadAssessmentRun>,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<Json<crate::assessments::RunResult>, CallToolResult> {
+        let owner = assessment_owner(&context)?;
+
+        crate::assessments::read(&self.pool, &owner, &args.run_id)
+            .await
+            .map(Json)
+            .map_err(assessment_error)
+    }
 }
 
 fn query_error(tool: &'static str, error: sqlx::Error) -> CallToolResult {
@@ -425,7 +799,10 @@ mod tests {
     #[test]
     fn discovered_tools_describe_inputs_and_declare_output_schemas() {
         let tools = McpServer::tool_router().list_all();
-        assert_eq!(tools.len(), 6);
+        assert_eq!(tools.len(), 8);
+        for name in ["assess_projects", "read_assessment_run"] {
+            assert!(tools.iter().any(|tool| tool.name == name));
+        }
         for tool in tools {
             assert!(tool.title.is_some(), "{} needs a title", tool.name);
             assert!(

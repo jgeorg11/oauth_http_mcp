@@ -1,3 +1,4 @@
+mod assessments;
 mod auth;
 mod authz;
 mod config;
@@ -33,7 +34,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .max_connections(data_config.max_connections)
         .connect(&data_config.database_url)
         .await?;
-    let app = router(pool, auth.clone());
+
+    sqlx::raw_sql(include_str!("../data/assessments.sql"))
+        .execute(&pool)
+        .await?;
+
+    let analyst = Arc::new(assessments::Analyst::from_env()?);
+    let transport = rmcp::transport::streamable_http_server::StreamableHttpServerConfig::default();
+
+    let shutdown = transport.cancellation_token.clone();
+
+    let app = router(pool, auth.clone(), analyst, transport);
 
     let listener = TcpListener::bind((mcp_config.host.as_str(), mcp_config.port)).await?;
     tracing::info!(
@@ -43,8 +54,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let key_refresh = tokio::spawn(auth.refresh_keys_periodically());
     let result = axum::serve(listener, app)
-        .with_graceful_shutdown(async {
+        .with_graceful_shutdown(async move {
             let _ = tokio::signal::ctrl_c().await;
+            shutdown.cancel();
             tracing::info!("Shutting down MCP server");
         })
         .await;

@@ -1,13 +1,14 @@
 {
   "name": "oauth-http-mcp",
-  "version": "0.1.5",
-  "description": "List, search, inspect, create, update, and delete projects through the Rust Streamable HTTP MCP server, subject to your permissions.",
+  "version": "0.1.7",
+  "description": "Manage projects and report each saved assessment as it completes, with optional MCP progress and streamed model drafts, subject to your permissions.",
   "mcpServers": "./.mcp.json",
+  "skills": "./skills/",
   "interface": {
     "displayName": "OAuth HTTP MCP",
-    "shortDescription": "Manage SQLite projects",
+    "shortDescription": "Assess and manage projects",
     "category": "Productivity",
     "capabilities": [],
-    "defaultPrompt": "Show me the projects"
+    "defaultPrompt": "Assess projects 1, 2, and 3 for spending pressure and overdue milestones. Choose a fresh run ID, tell me that ID, and report each assessment as it completes. Keep going until all three projects have an outcome."
   }
 }
