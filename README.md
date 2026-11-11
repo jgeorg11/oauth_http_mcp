@@ -1,9 +1,6 @@
 # Part 2: Create Identity Protected MCP Tools
 
-> Replace `YOUR_GITHUB_OWNER/YOUR_REPOSITORY` in repository links and clone
-> commands with the location of your public GitHub repository.
-
-[In Part 1](https://github.com/YOUR_GITHUB_OWNER/YOUR_REPOSITORY/tree/01-harden-auth),
+[In Part 1](https://github.com/jgeorg11/oauth_http_mcp/tree/01-harden-auth),
 you added automatic signing-key refresh to the Entra-protected Rust MCP server.
 In this guide, you will use the authenticated user's identity to decide which
 tools they can discover and call.
@@ -632,9 +629,9 @@ a well-architected MCP server.
 
 Previous guides:
 
-- [Part 0: Build an OAuth 2.1-protected HTTP MCP server](https://github.com/YOUR_GITHUB_OWNER/YOUR_REPOSITORY/tree/main).
-- [Part 1: Handle Entra signing-key rotation without restarting the MCP server](https://github.com/YOUR_GITHUB_OWNER/YOUR_REPOSITORY/tree/01-harden-auth).
+- [Part 0: Build an OAuth 2.1-protected HTTP MCP server](https://github.com/jgeorg11/oauth_http_mcp/tree/main).
+- [Part 1: Handle Entra signing-key rotation without restarting the MCP server](https://github.com/jgeorg11/oauth_http_mcp/tree/01-harden-auth).
 
 Continue with:
 
-- [Part 3: Create a long-running tool with streamed results](https://github.com/YOUR_GITHUB_OWNER/YOUR_REPOSITORY/tree/03-stream-tool).
+- [Part 3: Create a long-running tool with streamed results](https://github.com/jgeorg11/oauth_http_mcp/tree/03-stream-tool).
