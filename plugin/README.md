@@ -16,7 +16,7 @@ wildcards. Project records contain `id`, `name`, `owner`, `status`, `budget`,
 does not specify a budget currency or a risk-score scale.
 
 The complete server and Entra setup is in the README at the
-[source repository](https://github.com/YOUR_GITHUB_OWNER/YOUR_REPOSITORY).
+[source repository](https://github.com/jgeorg11/oauth_http_mcp).
 Run the commands below from the repository root.
 
 ## Configure your own registrations

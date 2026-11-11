@@ -1,8 +1,5 @@
 # Part 0: Build an OAuth 2.1-protected HTTP MCP server
 
-> Replace `YOUR_GITHUB_OWNER/YOUR_REPOSITORY` in repository links and clone
-> commands with the location of your public GitHub repository.
-
 This guide provides starter code for an authenticated MCP service.
 You will run an MCP server, register an API and a public client in Microsoft
 Entra ID, connect Codex over Streamable HTTP, and query a small SQLite project
@@ -88,13 +85,13 @@ not require a client secret.
   expose an API, and grant the required consent.
 - Install the ChatGPT desktop app and a Codex CLI that supports plugins and
   MCP OAuth. 
-- Clone or download the [source repository](https://github.com/YOUR_GITHUB_OWNER/YOUR_REPOSITORY).
+- Clone or download the [source repository](https://github.com/jgeorg11/oauth_http_mcp).
   Access to the internal Git host is required.
 
 To clone the repository and enter its root directory:
 
 ```bash
-git clone https://github.com/YOUR_GITHUB_OWNER/YOUR_REPOSITORY.git oauth_http_mcp
+git clone https://github.com/jgeorg11/oauth_http_mcp.git oauth_http_mcp
 cd oauth_http_mcp
 ```
 
@@ -458,6 +455,6 @@ a well-architected MCP server.
 
 Continue with:
 
-- [Part 1: Handle Entra signing-key rotation without restarting the MCP server](https://github.com/YOUR_GITHUB_OWNER/YOUR_REPOSITORY/tree/01-harden-auth).
-- [Part 2: Create identity-protected MCP tools](https://github.com/YOUR_GITHUB_OWNER/YOUR_REPOSITORY/tree/02-protected-tools).
-- [Part 3: Create a long-running tool with streamed results](https://github.com/YOUR_GITHUB_OWNER/YOUR_REPOSITORY/tree/03-stream-tool).
+- [Part 1: Handle Entra signing-key rotation without restarting the MCP server](https://github.com/jgeorg11/oauth_http_mcp/tree/01-harden-auth).
+- [Part 2: Create identity-protected MCP tools](https://github.com/jgeorg11/oauth_http_mcp/tree/02-protected-tools).
+- [Part 3: Create a long-running tool with streamed results](https://github.com/jgeorg11/oauth_http_mcp/tree/03-stream-tool).
