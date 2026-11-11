@@ -1,9 +1,6 @@
 # Part 3: Create a long-running tool with streamed results
 
-> Replace `YOUR_GITHUB_OWNER/YOUR_REPOSITORY` in repository links and clone
-> commands with the location of your public GitHub repository.
-
-[In Part 2](https://github.com/YOUR_GITHUB_OWNER/YOUR_REPOSITORY/tree/02-protected-tools),
+[In Part 2](https://github.com/jgeorg11/oauth_http_mcp/tree/02-protected-tools),
 you used the authenticated Entra identity to control which project tools a user
 can discover and call. In this guide, you will add a portfolio health assessment
 that performs asynchronous work and reports each project's result as it finishes.
@@ -433,6 +430,6 @@ a well-architected MCP server.
 
 Previous guides:
 
-- [Part 0: Build an OAuth 2.1-protected HTTP MCP server](https://github.com/YOUR_GITHUB_OWNER/YOUR_REPOSITORY/tree/main).
-- [Part 1: Handle Entra signing-key rotation without restarting the MCP server](https://github.com/YOUR_GITHUB_OWNER/YOUR_REPOSITORY/tree/01-harden-auth).
-- [Part 2: Create identity-protected MCP tools](https://github.com/YOUR_GITHUB_OWNER/YOUR_REPOSITORY/tree/02-protected-tools).
+- [Part 0: Build an OAuth 2.1-protected HTTP MCP server](https://github.com/jgeorg11/oauth_http_mcp/tree/main).
+- [Part 1: Handle Entra signing-key rotation without restarting the MCP server](https://github.com/jgeorg11/oauth_http_mcp/tree/01-harden-auth).
+- [Part 2: Create identity-protected MCP tools](https://github.com/jgeorg11/oauth_http_mcp/tree/02-protected-tools).
